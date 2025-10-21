@@ -23,6 +23,7 @@ from app.services.neo4j_service import neo4j_service
 from app.services.memory_coordinator import gather_memory_context, post_message_update
 from app.services import deterministic_extractor, profile_service
 from app.services import nlu
+from app.services import redis_service
 from app.services import llm_brain
 from app.services import nlg_engine
 from app.services import memory_manager
@@ -969,7 +970,7 @@ async def generate_json(
         return GenerateJSONResponse(response=None, provider_used=None, error="prompt too long")
 
     try:
-        result = await ai_service.generate_response_json(prompt)
+        result = await ai_get_response(prompt)
         # Use new response format: success, output, provider_used, error
         if result.get("success"):
             return GenerateJSONResponse(
@@ -1055,20 +1056,16 @@ async def handle_chat_message(
                 # Task was created successfully
                 task_data = flow_result.get("task_data", {})
                 confirmation_message = flow_result["message"]
-                
                 # Log the creation
-            asyncio.create_task(log_message(session_id, "user", message, chat_log_collection))
-            asyncio.create_task(log_message(session_id, "assistant", confirmation_message, chat_log_collection))
-                
+                asyncio.create_task(log_message(session_id, "user", message, chat_log_collection))
+                asyncio.create_task(log_message(session_id, "assistant", confirmation_message, chat_log_collection))
                 return confirmation_message
             elif flow_result.get("needs_response"):
                 # Need clarification or confirmation
                 clarification_message = flow_result["message"]
-                
                 # Log the clarification request
-            asyncio.create_task(log_message(session_id, "user", message, chat_log_collection))
-            asyncio.create_task(log_message(session_id, "assistant", clarification_message, chat_log_collection))
-                
+                asyncio.create_task(log_message(session_id, "user", message, chat_log_collection))
+                asyncio.create_task(log_message(session_id, "assistant", clarification_message, chat_log_collection))
                 return clarification_message
         except Exception as e:
             logger.exception(f"Task flow handling failed: {e}")
@@ -1412,8 +1409,9 @@ async def continue_chat(
             except Exception:
                 cur = None
             if cur and cur.get("videoId"):
-            asyncio.create_task(log_message(session_id, "user", req_message, chat_log))
-            asyncio.create_task(log_message(session_id, "assistant", "🔁 Replaying your requested video", chat_log))
+                req_message = request.message if hasattr(request, 'message') else ""
+                asyncio.create_task(log_message(session_id, "user", req_message, chat_log))
+                asyncio.create_task(log_message(session_id, "assistant", "🔁 Replaying your requested video", chat_log))
                 return ContinueChatResponse(response_text="🔁 Replaying your requested video", video={**cur, "autoplay": True})
 
         # If there's a pending clarification, merge with new message
@@ -1432,6 +1430,7 @@ async def continue_chat(
                         reply_txt = f"▶️ Playing {title}{ch_str}"
                         await _clear_pending_video(session_id)
                         # Log messages
+                        req_message = request.message if hasattr(request, 'message') else ""
                         asyncio.create_task(log_message(session_id, "user", req_message, chat_log))
                         asyncio.create_task(log_message(session_id, "assistant", reply_txt, chat_log))
                         try:
@@ -1441,6 +1440,7 @@ async def continue_chat(
                         return ContinueChatResponse(response_text=reply_txt, video={**best, "autoplay": True}, video_intent=merged)
             # If still unclear, keep asking—a more specific prompt
             ask = "🤔 I can play it—please confirm the exact song or language (e.g., 'Chaleya Hindi')."
+            req_message = request.message if hasattr(request, 'message') else ""
             asyncio.create_task(log_message(session_id, "user", req_message, chat_log))
             asyncio.create_task(log_message(session_id, "assistant", ask, chat_log))
             return ContinueChatResponse(response_text=ask, video=None, video_intent=pending)
@@ -1448,6 +1448,7 @@ async def continue_chat(
         # No pending—try normal fast path
         vi = await _maybe_handle_video_intent(request.message)
         if vi and vi.get("handled"):
+            req_message = request.message if hasattr(request, 'message') else ""
             asyncio.create_task(log_message(session_id, "user", req_message, chat_log))
             asyncio.create_task(log_message(session_id, "assistant", vi.get("response_text") or "", chat_log))
             if vi.get("video") is None and vi.get("video_intent"):
@@ -2144,7 +2145,7 @@ async def clear_chat_history(
     """Clear all legacy chat history for the user and delete Redis session state."""
     result = chat_logs.delete_many({"email": current_user["email"]})
     try:
-        if redis_service.redis_client:
+        if hasattr(redis_service, 'redis_client') and redis_service.redis_client:
             await redis_service.redis_client.delete(current_user["email"])
     except Exception:
         pass
