@@ -138,6 +138,17 @@ default_dev_origins = [
     "http://localhost:3001",
     "http://127.0.0.1:3001",
 ]
+
+# Add known frontend (Vercel) domains so the deployed frontend is allowed by default.
+# If you prefer to keep domains configurable via env var, remove or comment these lines.
+vercel_frontend_origins = [
+    "https://maya-16-d-git-patch-1-malothu-yashs-projects.vercel.app",
+    "https://maya-16-d.vercel.app",
+]
+for o in vercel_frontend_origins:
+    if o not in default_dev_origins:
+        default_dev_origins.append(o)
+
 if allow_all:
     origins = ["*"]
 elif raw_origins:
